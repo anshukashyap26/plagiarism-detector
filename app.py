@@ -7,13 +7,17 @@ from utils.highlight import highlight_matches_html
 import pandas as pd
 import os, requests
 
+# NEW imports
+from services.webscan import scan_text_against_web
+from services.aiflag import analyze_style
+
 st.set_page_config(page_title="Plagiarism Detector (KMP/LCS/RK)", layout="wide")
 st.title("Plagiarism Detector")
-st.caption("KMP / Rabin–Karp for exact matches • LCS for global similarity • No data stored")
+st.caption("KMP / Rabin–Karp for exact matches • LCS for global similarity • Web Scan (beta) • AI-text heuristics")
 
-API_BASE = os.getenv("PLAG_API_BASE")  # e.g., https://<your-api-host>
+API_BASE = os.getenv("PLAG_API_BASE")  # optional: point UI to your hosted API
 
-mode = st.radio("Input mode", ["Upload files", "Paste text"], horizontal=True)
+mode = st.radio("Two-text mode input", ["Upload files", "Paste text"], horizontal=True)
 algo = st.selectbox("Algorithm", ["LCS (similarity %)", "KMP (exact substrings)", "Rabin–Karp (exact substrings)"])
 
 if mode == "Upload files":
@@ -22,12 +26,12 @@ if mode == "Upload files":
 else:
     col1, col2 = st.columns(2)
     with col1:
-        t1 = st.text_area("Text A", height=220)
+        t1 = st.text_area("Text A", height=180)
     with col2:
-        t2 = st.text_area("Text B", height=220)
+        t2 = st.text_area("Text B", height=180)
     texts, names = ([t1, t2] if t1 and t2 else []), ["TextA", "TextB"]
 
-run = st.button("Analyze", type="primary", disabled=(len(texts) < 2))
+run = st.button("Analyze (two-text mode)", type="primary", disabled=(len(texts) < 2))
 
 def call_api(algorithm, textA, textB, pattern=None, chunk=20):
     if not API_BASE:
@@ -114,3 +118,29 @@ if run:
             st.markdown(highlight_matches_html(textA, matchesA), unsafe_allow_html=True)
             st.markdown("### Highlighted B")
             st.markdown(highlight_matches_html(textB, matchesB), unsafe_allow_html=True)
+
+# ----- NEW: Single-Input Scanner -----
+st.header("Single-Input Scanner")
+mode1 = st.radio("Input", ["Paste text", "Upload file"], horizontal=True, key="single")
+if mode1 == "Paste text":
+    doc = st.text_area("Paste text here", height=240, key="one")
+else:
+    uf = st.file_uploader("Upload a text file", type=["txt","md","csv","py","java","cpp"])
+    doc = uf.read().decode("utf-8", errors="ignore") if uf else ""
+
+colx, coly = st.columns(2)
+run_web = colx.button("Run Web Plagiarism Scan (beta)")
+run_ai  = coly.button("Check AI-Generated Signals (heuristic)")
+
+if run_web and doc:
+    st.info("Uses Bing Web Search API. Set BING_API_KEY in env or Streamlit secrets.")
+    res = scan_text_against_web(doc, max_queries=8)
+    st.subheader("Queries used")
+    st.write(res["queries"])
+    st.subheader("Possible matches (evidence)")
+    for m in res["matches"]:
+        st.markdown(f"- **[{m['name']}]({m['url']})** — {m['snippet']}")
+
+if run_ai and doc:
+    st.subheader("AI-text heuristic score")
+    st.json(analyze_style(doc))
