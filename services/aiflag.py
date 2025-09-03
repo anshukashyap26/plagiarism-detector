@@ -8,16 +8,19 @@ def analyze_style(text: str) -> Dict:
     sents = re.split(r"(?<=[.!?])\s+", text.strip())
     if not words:
         return {"score": 0.0, "signals": {}}
-    ttr = len(set(words)) / max(1, len(words))
+
+    ttr = len(set(words)) / max(1, len(words))                      # type-token ratio
     slens = [len(re.findall(r"[A-Za-z']+", s)) for s in sents if s.strip()]
-    avg_len = sum(slens) / max(1, len(slens))
+    avg_len = sum(slens) / max(1, len(slens))                       # avg sentence length
     var = sum((l-avg_len)**2 for l in slens) / max(1, len(slens))
-    burst = math.sqrt(var)
+    burst = math.sqrt(var)                                          # burstiness ≈ stddev
     bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)]
     rep = Counter(bigrams)
     rep_ratio = sum(v for _, v in rep.most_common(10)) / max(1, len(bigrams))
-    score = max(0.0, min(1.0), )
+
+    # combine: lower TTR + lower burst + higher repetition → more “AI-like”
     score = max(0.0, min(1.0, (0.5*(1-ttr) + 0.3*(1/(1+burst)) + 0.2*rep_ratio)))
+
     return {
         "score": round(score, 3),
         "signals": {
