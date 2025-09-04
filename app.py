@@ -1,145 +1,219 @@
+# app.py
+import os
+import json
+from typing import List, Tuple
+
 import streamlit as st
-from algorithms.kmp import kmp_find_all
-from algorithms.rabin_karp import rabin_karp_find_all
-from algorithms.lcs import lcs_similarity
-from utils.text_io import read_files_as_texts
-from utils.highlight import highlight_matches_html
-import pandas as pd
-import os, requests
 
-# NEW imports
-from services.webscan import scan_text_against_web
-from services.aiflag import analyze_style
+# ---- Algorithms (already in your repo) ----
+try:
+    from algorithms.lcs import lcs_similarity
+except Exception:
+    # Fallback simple LCS similarity if import ever fails
+    def lcs_similarity(a: str, b: str) -> float:
+        m, n = len(a), len(b)
+        dp = [[0]*(n+1) for _ in range(m+1)]
+        for i in range(m):
+            for j in range(n):
+                dp[i+1][j+1] = dp[i][j]+1 if a[i]==b[j] else max(dp[i][j+1], dp[i+1][j])
+        l = dp[m][n]
+        return 0.0 if max(m, n)==0 else l / max(m, n)
 
-st.set_page_config(page_title="Plagiarism Detector (KMP/LCS/RK)", layout="wide")
-st.title("Plagiarism Detector")
-st.caption("KMP / Rabin–Karp for exact matches • LCS for global similarity • Web Scan (beta) • AI-text heuristics")
+try:
+    from algorithms.kmp import kmp_find_all
+except Exception:
+    # very small KMP fallback
+    def kmp_find_all(text: str, pat: str) -> List[int]:
+        if not pat: return []
+        lps = [0]*len(pat)
+        i = 1; L = 0
+        while i < len(pat):
+            if pat[i]==pat[L]:
+                L += 1; lps[i]=L; i+=1
+            elif L: L = lps[L-1]
+            else: lps[i]=0; i+=1
+        out=[]; i=j=0
+        while i < len(text):
+            if text[i]==pat[j]:
+                i+=1; j+=1
+                if j==len(pat):
+                    out.append(i-j); j=lps[j-1]
+            elif j: j=lps[j-1]
+            else: i+=1
+        return out
 
-API_BASE = os.getenv("PLAG_API_BASE")  # optional: point UI to your hosted API
+try:
+    from algorithms.rabin_karp import rabin_karp_find_all
+except Exception:
+    # simple RK fallback
+    def rabin_karp_find_all(text: str, pat: str) -> List[int]:
+        if not pat: return []
+        base, mod = 256, 10**9+7
+        m, n = len(pat), len(text)
+        if m>n: return []
+        hp = 0; ht = 0; h = 1
+        for _ in range(m-1): h = (h*base) % mod
+        for i in range(m):
+            hp = (hp*base + ord(pat[i])) % mod
+            ht = (ht*base + ord(text[i])) % mod
+        out=[]
+        for i in range(n-m+1):
+            if hp==ht and text[i:i+m]==pat:
+                out.append(i)
+            if i < n-m:
+                ht = ( (ht - ord(text[i])*h) * base + ord(text[i+m]) ) % mod
+                if ht<0: ht += mod
+        return out
 
-mode = st.radio("Two-text mode input", ["Upload files", "Paste text"], horizontal=True)
-algo = st.selectbox("Algorithm", ["LCS (similarity %)", "KMP (exact substrings)", "Rabin–Karp (exact substrings)"])
-
-if mode == "Upload files":
-    files = st.file_uploader("Upload 2+ text files (.txt, .md, .csv)", type=["txt","md","csv"], accept_multiple_files=True)
-    texts, names = read_files_as_texts(files) if files else ([], [])
+# ---- Optional modules (won't crash if missing) ----
+try:
+    from services.webscan import scan_text_against_web
+except Exception as e:
+    scan_text_against_web = None
+    WEBSCAN_IMPORT_ERR = str(e)
 else:
-    col1, col2 = st.columns(2)
-    with col1:
-        t1 = st.text_area("Text A", height=180)
-    with col2:
-        t2 = st.text_area("Text B", height=180)
-    texts, names = ([t1, t2] if t1 and t2 else []), ["TextA", "TextB"]
+    WEBSCAN_IMPORT_ERR = None
 
-run = st.button("Analyze (two-text mode)", type="primary", disabled=(len(texts) < 2))
+try:
+    from services.aiflag import analyze_style
+except Exception as e:
+    analyze_style = None
+    AIFLAG_IMPORT_ERR = str(e)
+else:
+    AIFLAG_IMPORT_ERR = None
 
-def call_api(algorithm, textA, textB, pattern=None, chunk=20):
-    if not API_BASE:
-        return None
-    try:
-        resp = requests.post(f"{API_BASE}/api/analyze", json={
-            "algorithm": algorithm, "textA": textA, "textB": textB,
-            "pattern": pattern, "chunk": chunk
-        }, timeout=30)
-        if resp.ok:
-            return resp.json()
-    except Exception as e:
-        st.info(f"API call failed; using local algorithms. ({e})")
-    return None
 
-if run:
-    if algo.startswith("LCS"):
-        # If API exists, use it
-        if API_BASE and len(texts) == 2:
-            data = call_api("lcs", texts[0], texts[1])
-            if data and "similarity" in data:
-                st.subheader("LCS Similarity (%)")
-                st.write(round(data["similarity"] * 100, 2))
-            else:
-                st.info("Falling back to local computation.")
-        # Local matrix computation
-        n = len(texts)
-        sim = [[0.0]*n for _ in range(n)]
-        for i in range(n):
-            for j in range(i+1, n):
-                s = lcs_similarity(texts[i], texts[j])
-                sim[i][j] = sim[j][i] = round(s*100, 2)
-        df = pd.DataFrame(sim, index=names, columns=names)
-        st.subheader("LCS Similarity (%) — Local")
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.subheader("Exact Match Spans")
-        colA, colB = st.columns(2)
-        with colA:
-            a_idx = st.selectbox("Select A", list(range(len(names))), format_func=lambda i: names[i])
-        with colB:
-            b_idx = st.selectbox("Select B", list(range(len(names))), format_func=lambda i: names[i], index=1 if len(names)>1 else 0)
+st.set_page_config(page_title="Plagiarism Detector • Streamlit", layout="wide")
+st.title("🧭 Plagiarism & Style Analyzer")
 
-        textA, textB = texts[a_idx], texts[b_idx]
-        pattern = st.text_input("Optional: pattern to search (leave empty to auto-chunk)")
+st.caption(
+    "Compare two texts (LCS/KMP/RK), scan a single input against the public web "
+    "with strict evidence, and inspect simple AI-text heuristics."
+)
 
-        finder = kmp_find_all if algo.startswith("KMP") else rabin_karp_find_all
+tabs = st.tabs(["🔁 Compare two texts", "🛰️ Single-Input Scanner"])
 
-        if pattern:
-            # Try API
-            data = call_api("kmp" if algo.startswith("KMP") else "rk", textA, textB, pattern=pattern)
-            if data and "matchesA" in data:
-                matchesA = data["matchesA"]
-                matchesB = data["matchesB"]
-            else:
-                matchesA = [(i, len(pattern)) for i in finder(textA, pattern)]
-                matchesB = [(i, len(pattern)) for i in finder(textB, pattern)]
-            st.markdown(f"**Occurrences in A:** {len(matchesA)}  |  **in B:** {len(matchesB)}")
-            st.markdown("### Highlighted A")
-            st.markdown(highlight_matches_html(textA, matchesA), unsafe_allow_html=True)
-            st.markdown("### Highlighted B")
-            st.markdown(highlight_matches_html(textB, matchesB), unsafe_allow_html=True)
+# =====================================================================================
+# TAB 1 — Compare two texts
+# =====================================================================================
+with tabs[0]:
+    st.subheader("Compare two texts")
+
+    colA, colB = st.columns(2)
+    with colA:
+        textA = st.text_area(
+            "Text A",
+            height=220,
+            value="The quick brown fox jumps over the lazy dog.",
+            key="txtA",
+        )
+        fileA = st.file_uploader("Or upload .txt for A", type=["txt"], key="fA")
+        if fileA is not None:
+            try:
+                textA = fileA.read().decode("utf-8", errors="ignore")
+                st.success("Loaded Text A from file.")
+            except Exception:
+                st.error("Could not read file A as UTF-8 text.")
+
+    with colB:
+        textB = st.text_area(
+            "Text B",
+            height=220,
+            value="A quick brown dog outpaces a fast fox.",
+            key="txtB",
+        )
+        fileB = st.file_uploader("Or upload .txt for B", type=["txt"], key="fB")
+        if fileB is not None:
+            try:
+                textB = fileB.read().decode("utf-8", errors="ignore")
+                st.success("Loaded Text B from file.")
+            except Exception:
+                st.error("Could not read file B as UTF-8 text.")
+
+    algo = st.selectbox(
+        "Algorithm",
+        ["LCS (global similarity %)", "Exact matches • KMP", "Exact matches • Rabin-Karp"],
+    )
+
+    pattern = ""
+    if "KMP" in algo or "Rabin" in algo:
+        pattern = st.text_input("Pattern to search (required for exact-match modes)", "")
+
+    if st.button("Analyze", type="primary"):
+        if not textA or not textB:
+            st.error("Please provide both Text A and Text B.")
         else:
-            chunk = st.slider("Auto-chunk length", 8, 64, 20, step=2)
-            # Try API
-            data = call_api("kmp" if algo.startswith("KMP") else "rk", textA, textB, pattern=None, chunk=chunk)
-            if data and "matchesA" in data:
-                matchesA = data["matchesA"]
-                matchesB = data["matchesB"]
+            if algo.startswith("LCS"):
+                sim = lcs_similarity(textA, textB)
+                st.metric("LCS similarity", f"{round(sim*100, 2)} %")
             else:
-                chunksA = set()
-                for i in range(0, max(0, len(textA)-chunk+1)):
-                    s = textA[i:i+chunk]
-                    if s.strip():
-                        chunksA.add(s)
-                matchesA, matchesB = [], []
-                for s in chunksA:
-                    for pos in finder(textA, s):
-                        matchesA.append((pos, chunk))
-                    for pos in finder(textB, s):
-                        matchesB.append((pos, chunk))
-            st.markdown(f"**Matched chunks in A:** {len(matchesA)}  |  **in B:** {len(matchesB)}")
-            st.markdown("### Highlighted A")
-            st.markdown(highlight_matches_html(textA, matchesA), unsafe_allow_html=True)
-            st.markdown("### Highlighted B")
-            st.markdown(highlight_matches_html(textB, matchesB), unsafe_allow_html=True)
+                if not pattern.strip():
+                    st.warning("Enter a pattern for exact-match modes.")
+                else:
+                    finder = kmp_find_all if "KMP" in algo else rabin_karp_find_all
+                    posA = finder(textA, pattern)
+                    posB = finder(textB, pattern)
+                    st.write("**Positions in A**:", posA or "no matches")
+                    st.write("**Positions in B**:", posB or "no matches")
 
-# ----- NEW: Single-Input Scanner -----
-st.header("Single-Input Scanner")
-mode1 = st.radio("Input", ["Paste text", "Upload file"], horizontal=True, key="single")
-if mode1 == "Paste text":
-    doc = st.text_area("Paste text here", height=240, key="one")
-else:
-    uf = st.file_uploader("Upload a text file", type=["txt","md","csv","py","java","cpp"])
-    doc = uf.read().decode("utf-8", errors="ignore") if uf else ""
 
-colx, coly = st.columns(2)
-run_web = colx.button("Run Web Plagiarism Scan (beta)")
-run_ai  = coly.button("Check AI-Generated Signals (heuristic)")
+# =====================================================================================
+# TAB 2 — Single-Input Scanner
+# =====================================================================================
+with tabs[1]:
+    st.subheader("Single-Input Scanner")
 
-if run_web and doc:
-    res = scan_text_against_web(doc, max_queries=8)
-    st.subheader("Queries used")
-    st.write(res["queries"])
-    st.subheader("Possible matches (evidence)")
-    for m in res["matches"]:
-        st.markdown(f"- **[{m['name']}]({m['url']})** — {m['snippet']}")
+    doc = st.text_area("Paste text here", height=180, key="singleInput")
 
-if run_ai and doc:
-    st.subheader("AI-text heuristic score")
-    st.json(analyze_style(doc))
+    c1, c2 = st.columns(2)
+    run_web = c1.button("Run Web Plagiarism Scan (beta)")
+    run_ai  = c2.button("Check AI-Generated Signals (heuristic)")
+
+    # --- Web scan ---
+    if run_web:
+        if scan_text_against_web is None:
+            st.error("Web scan module failed to load.")
+            if WEBSCAN_IMPORT_ERR:
+                st.caption(WEBSCAN_IMPORT_ERR)
+        elif not doc.strip():
+            st.warning("Please paste some text first.")
+        else:
+            res = scan_text_against_web(doc, max_queries=8)
+            st.subheader("Queries used  ↩︎")
+            st.write(res.get("queries", []))
+
+            st.subheader("Possible matches (evidence)")
+            matches = res.get("matches", [])
+            if not matches:
+                st.info(
+                    "No strict matches found. Try a longer excerpt, or adjust strictness "
+                    "(env var MIN_LINE_MATCH_FRAC, default 0.5)."
+                )
+            for m in matches:
+                frac = m.get("line_match_fraction")
+                extra = f" — match:{frac:.2f}" if isinstance(frac, (int, float)) else ""
+                st.markdown(f"- **[{m.get('name','(no title)')}]({m.get('url','#')})** — {m.get('snippet','')}{extra}")
+
+    # --- AI heuristics ---
+    if run_ai:
+        if analyze_style is None:
+            st.error("AI-heuristics module not available.")
+            if AIFLAG_IMPORT_ERR:
+                st.caption(AIFLAG_IMPORT_ERR)
+        elif not doc.strip():
+            st.warning("Please paste some text first.")
+        else:
+            out = analyze_style(doc)
+            wc = out.get("signals", {}).get("word_count", 0)
+            if wc < 30:
+                st.caption("Note: very short text; score is not reliable.")
+            st.subheader("AI-text heuristic score  ↩︎")
+            st.json(out)
+
+
+# Footer
+st.markdown("---")
+st.caption(
+    "This tool provides evidence links and simple style signals. Always review sources manually; "
+    "web detectors and heuristics can be noisy."
+)
