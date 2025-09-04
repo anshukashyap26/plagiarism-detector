@@ -133,7 +133,6 @@ run_web = colx.button("Run Web Plagiarism Scan (beta)")
 run_ai  = coly.button("Check AI-Generated Signals (heuristic)")
 
 if run_web and doc:
-    st.info("Uses Bing Web Search API. Set BING_API_KEY in env or Streamlit secrets.")
     res = scan_text_against_web(doc, max_queries=8)
     st.subheader("Queries used")
     st.write(res["queries"])
