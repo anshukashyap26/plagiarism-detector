@@ -5,7 +5,7 @@ from typing import List
 
 import streamlit as st
 
-# ---- Algorithms (already in your repo) ----
+# ---- Algorithms (fallbacks included in case your modules aren't found) ----
 try:
     from algorithms.lcs import lcs_similarity
 except Exception:
@@ -196,6 +196,14 @@ with tabs[1]:
                 suffix = " — " + ", ".join(extra) if extra else ""
                 st.markdown(f"- **[{m.get('name','(no title)')}]({m.get('url','#')})** — {m.get('snippet','')}{suffix}")
 
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            # Verifier debug (per-URL) — this is the block you asked about
+            dbg = res.get("debug")
+            if dbg:
+                with st.expander("Verifier debug (per-URL)"):
+                    st.json(dbg)
+            # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
     # --- AI heuristics ---
     if run_ai:
         if analyze_style is None:
@@ -212,7 +220,7 @@ with tabs[1]:
             st.subheader("AI-text heuristic score  ↩︎")
             st.json(out)
 
-    # --------- Google CSE debug expander ----------
+    # --------- Google CSE debug expander (sanity check your key/CX) ----------
     with st.expander("🔧 Debug: Google CSE health check"):
         api_key = os.getenv("GOOGLE_API_KEY")
         cx_val  = os.getenv("GOOGLE_CX")
