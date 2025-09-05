@@ -32,10 +32,6 @@ from pdfminer.high_level import extract_text as pdf_extract_text
 PUNCT_CLEAN = re.compile(r"[^a-z0-9 ]+")
 
 def _normalize(s: str) -> str:
-    """
-    Lower, de-accent, unify quotes/dashes, collapse spaces, drop punctuation.
-    This makes matching robust to formatting differences (curly quotes, hyphenation).
-    """
     if not s:
         return ""
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
@@ -59,7 +55,6 @@ def _visible_html_text(html: str) -> str:
     return _normalize(soup.get_text(separator=" "))
 
 def _visible_page_text(url: str, timeout: int = 15) -> str:
-    """Return normalized text from HTML or PDF."""
     try:
         r = requests.get(
             url,
@@ -69,13 +64,11 @@ def _visible_page_text(url: str, timeout: int = 15) -> str:
         if r.status_code != 200:
             return ""
         ctype = (r.headers.get("Content-Type") or "").lower()
-        # PDF
         if "application/pdf" in ctype or url.lower().endswith(".pdf"):
             try:
                 return _normalize(pdf_extract_text(io.BytesIO(r.content)) or "")
             except Exception:
                 return ""
-        # HTML
         if "text/html" in ctype:
             return _visible_html_text(r.text)
         return ""
@@ -86,10 +79,6 @@ def _visible_page_text(url: str, timeout: int = 15) -> str:
 # ------------------------ verification units ------------------------
 
 def _units_for_match(user_text: str) -> List[str]:
-    """
-    Build verification units from sentences (>=8 words).
-    Fallback: overlapping 12-word windows when no long sentences exist.
-    """
     sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", user_text) if s.strip()]
     long_sents = [s for s in sents if len(re.findall(r"[A-Za-z0-9']+", s)) >= 8]
     if long_sents:
@@ -116,7 +105,6 @@ def _fraction_units_present(page_text_norm: str, units: List[str]) -> float:
 # ------------------------ query builders ------------------------
 
 def _quoted_windows(text: str, n: int = 8, step: int = 4, k: int = 8) -> List[str]:
-    """Quoted n-gram windows from original text—great for academic prose."""
     toks = re.findall(r"[A-Za-z0-9']+", text)
     qs: List[str] = []
     for i in range(0, max(0, len(toks) - n + 1), step):
@@ -143,7 +131,7 @@ def _google_cse_search(query: str, count: int = 6) -> List[Dict]:
     url = "https://www.googleapis.com/customsearch/v1"
     params = {"key": api_key, "cx": cx, "q": query, "num": min(count, 10)}
     if len(query) >= 2 and query[0] == query[-1] == '"':
-        params["exactTerms"] = query.strip('"')  # tighter matching for quoted phrases
+        params["exactTerms"] = query.strip('"')
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json() or {}
@@ -160,11 +148,6 @@ def _google_cse_search(query: str, count: int = 6) -> List[Dict]:
 # ------------------------ smarter fetching + fallbacks ------------------------
 
 def _best_page_text_for_url(url: str) -> Tuple[str, str]:
-    """
-    Try to fetch readable text for a URL.
-    If HTML fails, try common PDF variants (MDPI, arXiv).
-    Returns (text, final_url_used).
-    """
     txt = _visible_page_text(url)
     if txt:
         return txt, url
@@ -172,11 +155,9 @@ def _best_page_text_for_url(url: str) -> Tuple[str, str]:
     low = url.lower()
     candidates: List[str] = []
 
-    # MDPI article -> try /pdf
     if "mdpi.com" in low and "/pdf" not in low:
         candidates.append(url.rstrip("/") + "/pdf")
 
-    # arXiv abs page -> try /pdf/… .pdf
     if "arxiv.org/abs/" in low and "/pdf/" not in low:
         candidates.append(low.replace("/abs/", "/pdf/") + ".pdf")
 
@@ -188,7 +169,6 @@ def _best_page_text_for_url(url: str) -> Tuple[str, str]:
     return "", url
 
 def _snippet_fraction(e: dict, units: List[str]) -> float:
-    """Fallback: verify against the Google snippet when page fetch fails."""
     snip = _normalize(e.get("snippet", "") or "")
     if not snip:
         return 0.0
@@ -202,15 +182,9 @@ def _snippet_fraction(e: dict, units: List[str]) -> float:
 # ------------------------ main API ------------------------
 
 def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
-    """
-    Build queries, fetch candidates from Google CSE, then STRICT-verify
-    by downloading each page and checking sentence-level presence.
-    Includes PDF + snippet fallbacks for hard-to-scrape sites.
-    """
     base = text.strip()
     tokens = re.findall(r"[A-Za-z0-9']+", base)
 
-    # Short input -> strict phrases; Long input -> quoted sentences + windows
     if len(base) < 120 or len(tokens) < 12:
         queries: List[str] = []
         if base and len(base) <= 200:
@@ -218,14 +192,12 @@ def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
         if len(tokens) >= 4:
             tail = " ".join(tokens[-6:])
             queries.append(f'"{tail}"')
-        # optional domain phrase example
         m = re.search(r"\b(iiit[^,.;\n]*)", base, re.I)
         if m and len(m.group(1).split()) >= 2:
             queries.append(f'"{m.group(1).strip()}"')
         seen = set()
         queries = [q for q in queries if q not in seen and not seen.add(q)]
     else:
-        # take a couple of quoted full sentences + sliding windows
         sents = [s for s in re.split(r"(?<=[.!?])\s+", base) if len(s.split()) >= 8]
         q_sents = [f'"{s.strip()}"' for s in sents[:2]]
         q_windows = _quoted_windows(base, n=8, step=4, k=max(0, max_queries - len(q_sents)))
@@ -235,7 +207,6 @@ def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
             if key not in seen:
                 queries.append(q); seen.add(key)
 
-    # 1) get candidates
     candidates = []
     for q in queries:
         try:
@@ -247,14 +218,12 @@ def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
                 candidates.append({"query": q, **h})
         time.sleep(0.2)
 
-    # de-dup by URL
     uniq, seen = [], set()
     for e in candidates:
         if e["url"] not in seen:
             uniq.append(e); seen.add(e["url"])
 
-    # 2) strict, sentence-based verification (with PDF + snippet fallbacks)
-    min_fraction = float(os.getenv("MIN_LINE_MATCH_FRAC", "0.5"))  # 50% rule
+    min_fraction = float(os.getenv("MIN_LINE_MATCH_FRAC", "0.5"))
     units = _units_for_match(base)
 
     verified = []
@@ -280,7 +249,6 @@ def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
                 frac = _fraction_units_present(page_norm, units)
                 ok = (frac >= min_fraction)
         else:
-            # Fallback: verify with Google snippet only (lower confidence)
             method = "snippet"
             frac = _snippet_fraction(e, units)
             ok = (frac >= min_fraction) or (len(units) == 1 and frac > 0)
