@@ -9,7 +9,6 @@ import streamlit as st
 try:
     from algorithms.lcs import lcs_similarity
 except Exception:
-    # Fallback simple LCS similarity if import ever fails
     def lcs_similarity(a: str, b: str) -> float:
         m, n = len(a), len(b)
         dp = [[0]*(n+1) for _ in range(m+1)]
@@ -22,7 +21,6 @@ except Exception:
 try:
     from algorithms.kmp import kmp_find_all
 except Exception:
-    # very small KMP fallback
     def kmp_find_all(text: str, pat: str) -> List[int]:
         if not pat: return []
         lps = [0]*len(pat)
@@ -45,13 +43,12 @@ except Exception:
 try:
     from algorithms.rabin_karp import rabin_karp_find_all
 except Exception:
-    # simple RK fallback
     def rabin_karp_find_all(text: str, pat: str) -> List[int]:
         if not pat: return []
         base, mod = 256, 10**9+7
         m, n = len(pat), len(text)
         if m>n: return []
-        hp = 0; ht = 0; h = 1
+        hp = ht = 0; h = 1
         for _ in range(m-1): h = (h*base) % mod
         for i in range(m):
             hp = (hp*base + ord(pat[i])) % mod
@@ -210,8 +207,6 @@ with tabs[1]:
             st.subheader("AI-text heuristic score  ↩︎")
             st.json(out)
 
-
-# Footer
 st.markdown("---")
 st.caption(
     "This tool provides evidence links and simple style signals. Always review sources manually; "
