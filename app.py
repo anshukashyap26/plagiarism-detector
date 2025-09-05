@@ -206,6 +206,27 @@ with tabs[1]:
                 st.caption("Note: very short text; score is not reliable.")
             st.subheader("AI-text heuristic score  ↩︎")
             st.json(out)
+    with st.expander("🔧 Debug: Google CSE health check"):
+    api_key_masked = (os.getenv("GOOGLE_API_KEY") or "")[:6] + "…" if os.getenv("GOOGLE_API_KEY") else None
+    cx_val = os.getenv("GOOGLE_CX")
+    st.write({"GOOGLE_API_KEY": bool(api_key_masked), "GOOGLE_CX_present": bool(cx_val)})
+    test_q = st.text_input("Test query", value="internet")
+
+    if st.button("Run sanity search"):
+        import requests, json
+        params = {"key": os.getenv("GOOGLE_API_KEY"),
+                  "cx": os.getenv("GOOGLE_CX"),
+                  "q": test_q, "num": 3}
+        try:
+            r = requests.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=15)
+            st.write("HTTP", r.status_code)
+            try:
+                st.json(r.json())
+            except Exception:
+                st.code(r.text[:2000])
+        except Exception as e:
+            st.error(f"Request failed: {e}")
+
 
 st.markdown("---")
 st.caption(
