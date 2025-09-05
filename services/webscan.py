@@ -8,6 +8,8 @@ Web scanning with strict verification.
 - Verifier     -> Downloads each result (HTML or PDF) and keeps only links where:
                   * single unit: exact presence
                   * multiple units: >= MIN_LINE_MATCH_FRAC (default 0.5) of units present
+- Fallbacks    -> Try common PDF variants (MDPI /pdf, arXiv /pdf/*.pdf).
+                  If the site blocks scraping, fall back to verifying via the Google snippet.
 - Env/Secrets  -> GOOGLE_API_KEY, GOOGLE_CX, MIN_LINE_MATCH_FRAC, MAX_VERIFY_PAGES
 """
 
@@ -18,7 +20,7 @@ import os
 import re
 import time
 import unicodedata
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -155,12 +157,55 @@ def _google_cse_search(query: str, count: int = 6) -> List[Dict]:
     return out
 
 
+# ------------------------ smarter fetching + fallbacks ------------------------
+
+def _best_page_text_for_url(url: str) -> Tuple[str, str]:
+    """
+    Try to fetch readable text for a URL.
+    If HTML fails, try common PDF variants (MDPI, arXiv).
+    Returns (text, final_url_used).
+    """
+    txt = _visible_page_text(url)
+    if txt:
+        return txt, url
+
+    low = url.lower()
+    candidates: List[str] = []
+
+    # MDPI article -> try /pdf
+    if "mdpi.com" in low and "/pdf" not in low:
+        candidates.append(url.rstrip("/") + "/pdf")
+
+    # arXiv abs page -> try /pdf/… .pdf
+    if "arxiv.org/abs/" in low and "/pdf/" not in low:
+        candidates.append(low.replace("/abs/", "/pdf/") + ".pdf")
+
+    for alt in candidates:
+        t2 = _visible_page_text(alt)
+        if t2:
+            return t2, alt
+
+    return "", url
+
+def _snippet_fraction(e: dict, units: List[str]) -> float:
+    """Fallback: verify against the Google snippet when page fetch fails."""
+    snip = _normalize(e.get("snippet", "") or "")
+    if not snip:
+        return 0.0
+    hits = 0
+    for u in units:
+        if _normalize(u) in snip:
+            hits += 1
+    return hits / max(1, len(units))
+
+
 # ------------------------ main API ------------------------
 
 def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
     """
     Build queries, fetch candidates from Google CSE, then STRICT-verify
     by downloading each page and checking sentence-level presence.
+    Includes PDF + snippet fallbacks for hard-to-scrape sites.
     """
     base = text.strip()
     tokens = re.findall(r"[A-Za-z0-9']+", base)
@@ -173,7 +218,7 @@ def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
         if len(tokens) >= 4:
             tail = " ".join(tokens[-6:])
             queries.append(f'"{tail}"')
-        # optional domain phrase (example for "iiit naya raipur")
+        # optional domain phrase example
         m = re.search(r"\b(iiit[^,.;\n]*)", base, re.I)
         if m and len(m.group(1).split()) >= 2:
             queries.append(f'"{m.group(1).strip()}"')
@@ -208,32 +253,42 @@ def scan_text_against_web(text: str, max_queries: int = 8) -> Dict:
         if e["url"] not in seen:
             uniq.append(e); seen.add(e["url"])
 
-    # 2) strict, sentence-based verification
+    # 2) strict, sentence-based verification (with PDF + snippet fallbacks)
     min_fraction = float(os.getenv("MIN_LINE_MATCH_FRAC", "0.5"))  # 50% rule
     units = _units_for_match(base)
-    units_norm = [_normalize(u) for u in units]
 
     verified = []
-    max_verify = int(os.getenv("MAX_VERIFY_PAGES", "12"))
+    max_verify = int(os.getenv("MAX_VERIFY_PAGES", "20"))
     checked = 0
     for e in uniq:
         if checked >= max_verify:
             break
-        page_text = _visible_page_text(e["url"])
-        checked += 1
-        if not page_text:
-            continue
 
-        page_norm = _normalize(page_text)
-        if len(units_norm) == 1:
-            ok = units_norm[0] in page_norm
-            frac = 1.0 if ok else 0.0
+        page_text, final_url = _best_page_text_for_url(e["url"])
+        checked += 1
+
+        ok = False
+        frac = 0.0
+        method = "page"
+
+        if page_text:
+            page_norm = _normalize(page_text)
+            if len(units) == 1:
+                ok = (_normalize(units[0]) in page_norm)
+                frac = 1.0 if ok else 0.0
+            else:
+                frac = _fraction_units_present(page_norm, units)
+                ok = (frac >= min_fraction)
         else:
-            frac = _fraction_units_present(page_norm, units_norm)
-            ok = frac >= min_fraction
+            # Fallback: verify with Google snippet only (lower confidence)
+            method = "snippet"
+            frac = _snippet_fraction(e, units)
+            ok = (frac >= min_fraction) or (len(units) == 1 and frac > 0)
 
         if ok:
+            e["url"] = final_url
             e["line_match_fraction"] = round(frac, 3)
+            e["verified_by"] = method
             verified.append(e)
 
     return {"queries": queries, "matches": verified}
