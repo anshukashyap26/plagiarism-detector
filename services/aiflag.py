@@ -15,22 +15,16 @@ def analyze_style(text: str) -> Dict[str, object]:
     if n == 0:
         return {"score": 0.0, "signals": {}, "disclaimer": "Empty text."}
 
-    # lexical variety
     ttr = len(set(words)) / n
-
-    # sentence length + burstiness
     slens = [len(re.findall(r"[A-Za-z']+", s)) for s in sents] or [n]
     burst = statistics.pstdev(slens)
 
-    # repetition = fraction of extra bigrams beyond the first occurrence
     bigrams = [f"{words[i]} {words[i+1]}" for i in range(n - 1)]
     counts = Counter(bigrams)
     repeated_extra = sum(max(0, v - 1) for v in counts.values())
     rep_ratio = repeated_extra / max(1, len(bigrams))
 
     base = 0.5 * (1 - ttr) + 0.3 * (1 / (1 + burst)) + 0.2 * rep_ratio
-
-    # down-weight very short text
     length_factor = min(1.0, n / 40.0)  # full weight after ~40 words
     score = max(0.0, min(1.0, base * length_factor))
 
